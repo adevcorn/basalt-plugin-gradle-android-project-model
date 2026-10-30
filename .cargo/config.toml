@@ -1,0 +1,5 @@
+# WASM guest plugins call host imports (basalt_read_file, basalt_list_files)
+# that the wasmtime Linker provides at runtime under module "env". rust-lld
+# must leave them as imports instead of erroring on undefined symbols.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-args=--allow-undefined"]

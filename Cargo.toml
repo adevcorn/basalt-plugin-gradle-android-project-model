@@ -1,0 +1,17 @@
+[package]
+name = "gradle-android-project-model"
+version = "0.1.1"
+edition = "2021"
+description = "Gradle / Android project model, build system, and test runner provider for Basalt"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+basalt-plugin-sdk = { git = "https://github.com/adevcorn/basalt-plugin-sdk", tag = "v0.1.4" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
