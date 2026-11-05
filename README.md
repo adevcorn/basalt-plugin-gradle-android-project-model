@@ -8,7 +8,7 @@ Android workspaces in Basalt.
 - `PROJECT_MODEL` / `project-model:gradle-android`: emits the generic
   project-model schema for the root Gradle workspace and every included
   module.
-- `BUILD_SYSTEM`: exposes `assembleDebug`.
+- `BUILD_SYSTEM`: exposes `compileDebugSources`.
 - `TEST_RUNNER`: exposes `testDebugUnitTest`.
 - `REVIEW_ACTIONS`: build, unit test, and `lintDebug`, with Kotlin compiler
   and Gradle test-output parsing.

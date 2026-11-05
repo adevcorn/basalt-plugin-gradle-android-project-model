@@ -5,7 +5,7 @@
 //! every included module (app, library, JVM module) with Android source,
 //! test, and build roots.
 //!
-//! Review actions run Gradle tasks (`assembleDebug`, `testDebugUnitTest`,
+//! Review actions run Gradle tasks (`compileDebugSources`, `testDebugUnitTest`,
 //! `lintDebug`) and map Kotlin compiler diagnostics (`e:` / `w:`) and test
 //! summaries to agent events. When a wrapper is present it is used; otherwise
 //! the system `gradle` executable is used. Missing Android SDKs degrade
@@ -669,7 +669,7 @@ fn review_actions(workspace_root: &str, _session_workspace: &str) -> Vec<ReviewA
             title: "Assemble Debug APK".into(),
             kind: ReviewActionKind::Build,
             ecosystem: "gradle-android".into(),
-            command_preview: "gradle assembleDebug".into(),
+            command_preview: "gradle compileDebugSources".into(),
             mutates_workspace: false,
             priority: 100,
         },
@@ -702,7 +702,7 @@ fn review_action_plan(
 ) -> Option<ReviewActionExecutionPlan> {
     let (executable, mut args) = gradle_invocation(session_workspace);
     let (task, category) = match action_id {
-        "gradle-build" => ("assembleDebug", "build"),
+        "gradle-build" => ("compileDebugSources", "build"),
         "gradle-test" => ("testDebugUnitTest", "test"),
         "gradle-lint" => ("lintDebug", "lint"),
         _ => return None,
@@ -816,21 +816,21 @@ fn review_action_parse_line(
             file_paths: Vec::new(),
         });
         counter += 1;
-    } else if let Some(task) = trimmed.strip_prefix("> Task ") {
-        let failed = task.ends_with(" FAILED");
-        let task_name = task.trim_end_matches(" FAILED").trim();
-        events.push(AgentEvent::NewEntry {
-            vendor_id: format!("gradle-{counter}"),
-            tool: "gradle".into(),
-            category: if action_id == "gradle-test" {
-                "test".into()
-            } else {
-                "build".into()
-            },
-            raw_cmd: format!("Task {task_name}{}", if failed { " FAILED" } else { "" }),
-            file_paths: Vec::new(),
-        });
-        counter += 1;
+    } else if let Some((task_name, failed)) = parse_gradle_task_line(trimmed) {
+        if failed {
+            events.push(AgentEvent::NewEntry {
+                vendor_id: format!("gradle-{counter}"),
+                tool: "gradle".into(),
+                category: if action_id == "gradle-test" {
+                    "test".into()
+                } else {
+                    "build".into()
+                },
+                raw_cmd: format!("Task {task_name} FAILED"),
+                file_paths: Vec::new(),
+            });
+            counter += 1;
+        }
     } else if trimmed.starts_with("FAILURE:") || trimmed.starts_with("* What went wrong:") {
         events.push(AgentEvent::NewEntry {
             vendor_id: format!("gradle-{counter}"),
@@ -850,6 +850,27 @@ fn review_action_parse_line(
     }
 
     (encode_counter(counter), events)
+}
+
+/// Parse a Gradle task execution line (e.g. `> Task :app:compileDebugKotlin`,
+/// `Task :app:preBuild UP-TO-DATE`, `:app:assembleDebug`, etc.).
+/// Returns `Some((task_name, failed))`.
+fn parse_gradle_task_line(line: &str) -> Option<(&str, bool)> {
+    let candidate = line.strip_prefix('>').map(|s| s.trim_start()).unwrap_or(line);
+    let task = if let Some(rest) = candidate.strip_prefix("Task ") {
+        rest
+    } else if candidate.starts_with(':') && !candidate.starts_with(": ") {
+        candidate
+    } else {
+        return None;
+    };
+    let failed = task.ends_with(" FAILED");
+    let task_name = if failed {
+        task.strip_suffix(" FAILED").unwrap_or(task).trim()
+    } else {
+        task.trim()
+    };
+    Some((task_name, failed))
 }
 
 /// Parse a Kotlin compiler line:
@@ -1178,6 +1199,7 @@ android { namespace = "com.adevcorn.feature.calendar" }
         let actions = review_actions(ws.to_str().unwrap(), ws.to_str().unwrap());
         let ids: Vec<&str> = actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["gradle-build", "gradle-test", "gradle-lint"]);
+        assert_eq!(actions[0].command_preview, "gradle compileDebugSources");
         assert_eq!(actions[1].kind, ReviewActionKind::Test);
         assert_eq!(actions[2].kind, ReviewActionKind::Lint);
         assert!(review_actions("/definitely/not/a/gradle/project", "/tmp").is_empty());
@@ -1206,6 +1228,15 @@ android { namespace = "com.adevcorn.feature.calendar" }
         assert_eq!(plan.executable, "gradle");
         assert_eq!(plan.args, vec!["testDebugUnitTest", "--console=plain"]);
         assert_eq!(plan.cwd_mode, ReviewActionCwdMode::SessionWorkspace);
+    }
+
+    #[test]
+    fn gradle_build_plan_specifies_compile_debug_sources_instead_of_assemble_debug() {
+        let plan = review_action_plan("gradle-build", "/ws", "/ws").unwrap();
+        assert_eq!(plan.executable, "gradle");
+        assert_eq!(plan.args, vec!["compileDebugSources", "--console=plain"]);
+        assert!(!plan.args.contains(&"assembleDebug".to_string()));
+        assert_eq!(plan.output_category, "build");
     }
 
     #[test]
@@ -1271,6 +1302,66 @@ android { namespace = "com.adevcorn.feature.calendar" }
         let raw = b"\x1b[31me: file:///C:/Foo.kt:1:2 bad\x1b[0m";
         let (_, events) = review_action_parse_line("gradle-build", raw, &[]);
         assert!(matches!(&events[0], AgentEvent::NewEntry { .. }));
+    }
+
+    #[test]
+    fn non_failing_gradle_tasks_do_not_emit_entries() {
+        let non_failing = [
+            b"Task :app:preBuild UP-TO-DATE".as_slice(),
+            b"Task :app:compileDebugAidl UP-TO-DATE",
+            b"Task :app:compileDebugKotlin",
+            b":app:assembleDebug UP-TO-DATE",
+            b":app:assembleDebug",
+            b"> Task :app:preBuild UP-TO-DATE",
+            b"> Task :app:compileDebugKotlin",
+            b"Task :app:compileDebugKotlin FROM-CACHE",
+            b"Task :app:compileDebugKotlin SKIPPED",
+            b"Task :app:compileDebugKotlin NO-SOURCE",
+        ];
+        for line in non_failing {
+            let (_, events) = review_action_parse_line("gradle-build", line, &[]);
+            assert!(
+                events.is_empty(),
+                "expected zero events for line: {}",
+                String::from_utf8_lossy(line)
+            );
+        }
+
+        let (_, failed_task) = review_action_parse_line(
+            "gradle-build",
+            b"Task :app:compileDebugKotlin FAILED",
+            &[],
+        );
+        assert_eq!(failed_task.len(), 1);
+        assert!(matches!(
+            &failed_task[0],
+            AgentEvent::NewEntry { category, raw_cmd, .. }
+                if category == "build" && raw_cmd == "Task :app:compileDebugKotlin FAILED"
+        ));
+
+        let (_, arrow_failed_task) = review_action_parse_line(
+            "gradle-build",
+            b"> Task :app:compileDebugKotlin FAILED",
+            &[],
+        );
+        assert_eq!(arrow_failed_task.len(), 1);
+        assert!(matches!(
+            &arrow_failed_task[0],
+            AgentEvent::NewEntry { category, raw_cmd, .. }
+                if category == "build" && raw_cmd == "Task :app:compileDebugKotlin FAILED"
+        ));
+
+        let (_, colon_failed_task) = review_action_parse_line(
+            "gradle-build",
+            b":app:compileDebugKotlin FAILED",
+            &[],
+        );
+        assert_eq!(colon_failed_task.len(), 1);
+        assert!(matches!(
+            &colon_failed_task[0],
+            AgentEvent::NewEntry { category, raw_cmd, .. }
+                if category == "build" && raw_cmd == "Task :app:compileDebugKotlin FAILED"
+        ));
     }
 
     /// Opt-in end-to-end model build against the real add-helper checkout.
