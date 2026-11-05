@@ -853,7 +853,7 @@ fn review_action_parse_line(
 }
 
 /// Parse a Gradle task execution line (e.g. `> Task :app:compileDebugKotlin`,
-/// `Task :app:preBuild UP-TO-DATE`, `:app:assembleDebug`, etc.).
+/// `Task :app:preBuild UP-TO-DATE`, `:app:compileDebugSources`, etc.).
 /// Returns `Some((task_name, failed))`.
 fn parse_gradle_task_line(line: &str) -> Option<(&str, bool)> {
     let candidate = line.strip_prefix('>').map(|s| s.trim_start()).unwrap_or(line);
@@ -1312,6 +1312,8 @@ android { namespace = "com.adevcorn.feature.calendar" }
             b"Task :app:compileDebugKotlin",
             b":app:assembleDebug UP-TO-DATE",
             b":app:assembleDebug",
+            b":app:compileDebugSources UP-TO-DATE",
+            b":app:compileDebugSources",
             b"> Task :app:preBuild UP-TO-DATE",
             b"> Task :app:compileDebugKotlin",
             b"Task :app:compileDebugKotlin FROM-CACHE",
